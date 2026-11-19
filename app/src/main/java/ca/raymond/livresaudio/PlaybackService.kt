@@ -2,6 +2,7 @@ package ca.raymond.livresaudio
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.media.audiofx.LoudnessEnhancer
 import android.os.SystemClock
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -30,6 +31,7 @@ class PlaybackService : MediaSessionService() {
 
     private var session: MediaSession? = null
     private lateinit var player: ExoPlayer
+    private var enhancer: LoudnessEnhancer? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate() {
@@ -61,7 +63,12 @@ class PlaybackService : MediaSessionService() {
             .build()
 
         player.addListener(object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) = saveNow()
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                saveNow()
+                if (!isPlaying) addHistory()
+            }
+
+            override fun onAudioSessionIdChanged(audioSessionId: Int) = setupEnhancer()
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = saveNow()
             override fun onPlaybackParametersChanged(playbackParameters: PlaybackParameters) = saveNow()
             override fun onPositionDiscontinuity(
@@ -80,6 +87,15 @@ class PlaybackService : MediaSessionService() {
         }
 
         SleepTimer.onExpire = { player.pause() }
+
+        // Saut des silences + amplification du volume (réglages de l'appli)
+        setupEnhancer()
+        scope.launch {
+            Library.skipSilence.collect { player.setSkipSilenceEnabled(it) }
+        }
+        scope.launch {
+            Library.boostDb.collect { applyBoost(it) }
+        }
     }
 
     private fun saveNow() {
@@ -91,6 +107,37 @@ class PlaybackService : MediaSessionService() {
             player.currentPosition,
             player.playbackParameters.speed
         )
+    }
+
+    private fun setupEnhancer() {
+        try {
+            enhancer?.release()
+        } catch (_: Exception) {
+        }
+        enhancer = try {
+            LoudnessEnhancer(player.audioSessionId)
+        } catch (e: Exception) {
+            null
+        }
+        applyBoost(Library.boostDb.value)
+    }
+
+    private fun applyBoost(db: Float) {
+        val e = enhancer ?: return
+        try {
+            e.setTargetGain((db * 100).toInt()) // millibels
+            e.enabled = db > 0f
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Historique : position mémorisée à chaque pause. */
+    private fun addHistory() {
+        val item = player.currentMediaItem ?: return
+        val (bookId, idx) = MediaIds.parse(item.mediaId) ?: return
+        val book = Library.find(bookId) ?: return
+        val name = book.chapters.getOrNull(idx)?.name ?: ""
+        Library.addMark(bookId, player.currentMediaItemIndex, player.currentPosition, "Pause · $name", auto = true)
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
@@ -106,6 +153,8 @@ class PlaybackService : MediaSessionService() {
         saveNow()
         SleepTimer.onExpire = null
         scope.cancel()
+        try { enhancer?.release() } catch (_: Exception) {}
+        enhancer = null
         session?.run {
             player.release()
             release()

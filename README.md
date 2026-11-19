@@ -8,11 +8,14 @@ Interface Material 3 (Material You : les couleurs suivent ton fond d'écran), gr
   - *Un seul livre* : tout le dossier = un livre.
 - **Reprise exacte** : livre, chapitre, position et vitesse sont mémorisés (toutes les 5 s, à chaque pause, changement de chapitre, fermeture). Au retour, on reprend là où on était.
 - Lecture en arrière-plan, notification, écran verrouillé, écouteurs Bluetooth (bouton lecture = reprend le dernier livre), pause automatique si on débranche les écouteurs.
+- **Couleurs du livre** : le fond du lecteur (dégradé) et tous ses menus prennent les couleurs de la pochette.
+- **Barre pilule** : minuterie, vitesse, marque-pages + historique, sauter les silences, amplification du volume (graphique animé).
+- **Bibliothèque en sections** : En cours / Pas commencés / Terminés, avec filtre.
+- **Menu ⋮ d'un livre** (ou appui long) : modifier titre/auteur, couverture depuis Internet, couverture depuis les fichiers, recommencer, terminé, supprimer.
 - Reculer 10 s / avancer 30 s, chapitre précédent/suivant, liste des chapitres.
 - Vitesse 0,5x → 3x (par livre).
 - Minuterie de sommeil (5 à 90 min).
 - Pochettes : `cover.jpg` / `folder.jpg` du dossier, sinon l'image intégrée au fichier.
-- Appui long sur un livre : *Recommencer au début* / *Marquer comme terminé*.
 - Formats : MP3, M4B, M4A, AAC, OGG, OPUS, FLAC, WAV.
 
 ## Compiler l'APK

@@ -46,10 +46,13 @@ private val placeholderColors = listOf(
     Color(0xFFC62828), Color(0xFF2E7D32), Color(0xFF00838F), Color(0xFFAD1457),
 )
 
+fun placeholderColor(title: String): Color =
+    placeholderColors[(title.hashCode() and 0x7fffffff) % placeholderColors.size]
+
 /** Pochette du livre, ou une tuile colorée avec l'initiale si aucune image. */
 @Composable
 fun Cover(book: Book, modifier: Modifier = Modifier, corner: Dp = 16.dp, letterSize: TextUnit = 48.sp) {
-    val bg = placeholderColors[(book.title.hashCode() and 0x7fffffff) % placeholderColors.size]
+    val bg = placeholderColor(book.title)
     Box(
         modifier
             .clip(RoundedCornerShape(corner))

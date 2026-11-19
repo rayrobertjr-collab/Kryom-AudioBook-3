@@ -31,6 +31,25 @@ data class Book(
         get() = if (totalMs > 0) (playedMs.toFloat() / totalMs).coerceIn(0f, 1f) else 0f
 }
 
+/** Marque-page (auto = entrée d'historique créée automatiquement). */
+data class Bookmark(
+    val id: Long,
+    val bookId: String,
+    val chapterIndex: Int,
+    val positionMs: Long,
+    val title: String,
+    val time: Long,
+    val auto: Boolean = false,
+)
+
+enum class BookStatus { CURRENT, NOT_STARTED, FINISHED }
+
+fun Book.status(): BookStatus = when {
+    chapters.isNotEmpty() && totalMs > 0 && (totalMs - playedMs) < 3_000 -> BookStatus.FINISHED
+    playedMs < 1_000 -> BookStatus.NOT_STARTED
+    else -> BookStatus.CURRENT
+}
+
 /** Identifiant de piste: "<idLivre>|#|<indexChapitre>" */
 object MediaIds {
     private const val SEP = "|#|"

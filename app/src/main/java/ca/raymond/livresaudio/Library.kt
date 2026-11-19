@@ -48,6 +48,18 @@ object Library {
     private val _scanning = MutableStateFlow(false)
     val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
 
+    private val _marks = MutableStateFlow<List<Bookmark>>(emptyList())
+    val marks: StateFlow<List<Bookmark>> = _marks.asStateFlow()
+
+    private val _hidden = MutableStateFlow<Set<String>>(emptySet())
+    val hidden: StateFlow<Set<String>> = _hidden.asStateFlow()
+
+    private val _skipSilence = MutableStateFlow(false)
+    val skipSilence: StateFlow<Boolean> = _skipSilence.asStateFlow()
+
+    private val _boostDb = MutableStateFlow(0f)
+    val boostDb: StateFlow<Float> = _boostDb.asStateFlow()
+
     @Synchronized
     fun init(context: Context) {
         if (initialized) return
@@ -101,6 +113,87 @@ object Library {
             }
         }
         save()
+    }
+
+    // ---------- Réglages ----------
+
+    fun setSkipSilence(on: Boolean) { _skipSilence.value = on; save() }
+    fun setBoost(db: Float) { _boostDb.value = db.coerceIn(0f, 12f); save() }
+
+    // ---------- Marque-pages et historique ----------
+
+    fun addMark(bookId: String, chapterIndex: Int, positionMs: Long, title: String, auto: Boolean) {
+        val now = System.currentTimeMillis()
+        _marks.update { list ->
+            if (auto) {
+                val lastAuto = list.filter { it.bookId == bookId && it.auto }.maxByOrNull { it.time }
+                if (lastAuto != null && lastAuto.chapterIndex == chapterIndex &&
+                    kotlin.math.abs(lastAuto.positionMs - positionMs) < 10_000
+                ) return@update list
+            }
+            val added = list + Bookmark(now, bookId, chapterIndex, positionMs.coerceAtLeast(0), title, now, auto)
+            // garder au plus 30 entrées d'historique par livre
+            val autos = added.filter { it.bookId == bookId && it.auto }.sortedByDescending { it.time }
+            val drop = autos.drop(30).map { it.id }.toSet()
+            added.filterNot { it.id in drop }
+        }
+        save()
+    }
+
+    fun deleteMark(id: Long) {
+        _marks.update { list -> list.filterNot { it.id == id } }
+        save()
+    }
+
+    // ---------- Modification d'un livre ----------
+
+    fun editInfo(id: String, title: String, author: String?) {
+        _books.update { list ->
+            list.map { if (it.id == id) it.copy(title = title.ifBlank { it.title }, author = author?.ifBlank { null }) else it }
+                .sortedWith(compareBy(NaturalOrder) { it.title })
+        }
+        save()
+    }
+
+    fun setCoverBytes(id: String, bytes: ByteArray) {
+        val dir = File(appCtx.filesDir, "covers").apply { mkdirs() }
+        val f = File(dir, "${id.hashCode().toUInt()}_${System.currentTimeMillis()}.img")
+        try {
+            f.writeBytes(bytes)
+        } catch (e: Exception) {
+            Log.e(TAG, "Couverture non enregistrée", e)
+            return
+        }
+        val old = find(id)?.coverUri
+        _books.update { list -> list.map { if (it.id == id) it.copy(coverUri = Uri.fromFile(f).toString()) else it } }
+        // effacer l'ancienne image si elle nous appartient
+        if (old != null && old.startsWith("file:")) {
+            try { Uri.parse(old).path?.let { File(it).delete() } } catch (_: Exception) {}
+        }
+        save()
+    }
+
+    fun setCoverFromUri(id: String, uri: Uri) {
+        val bytes = try {
+            appCtx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        } catch (e: Exception) {
+            null
+        } ?: return
+        setCoverBytes(id, bytes)
+    }
+
+    /** Retire le livre de la bibliothèque (les fichiers restent sur le téléphone). */
+    fun hideBook(id: String) {
+        _hidden.update { it + id }
+        _books.update { list -> list.filterNot { it.id == id } }
+        _marks.update { list -> list.filterNot { it.bookId == id } }
+        save()
+    }
+
+    fun unhideAll() {
+        _hidden.value = emptySet()
+        save()
+        rescan()
     }
 
     // ---------- Construction des pistes pour le lecteur ----------
@@ -184,7 +277,9 @@ object Library {
         // Fusion avec la progression la plus récente (elle a pu changer pendant le balayage)
         _books.update { current ->
             val cur = current.associateBy { it.id }
+            val hidden = _hidden.value
             found
+                .filterNot { it.id in hidden }
                 .distinctBy { it.id }
                 .map { b ->
                     val c = cur[b.id]
@@ -310,12 +405,10 @@ object Library {
 
     private fun save() {
         if (!::file.isInitialized) return
-        val snapshotBooks = _books.value
-        val snapshotFolders = _folders.value
         scope.launch {
             saveMutex.withLock {
                 try {
-                    val json = toJson(snapshotBooks, snapshotFolders)
+                    val json = toJson(_books.value, _folders.value)
                     val tmp = File(file.parentFile, "library.json.tmp")
                     tmp.writeText(json)
                     if (!tmp.renameTo(file)) {
@@ -354,6 +447,17 @@ object Library {
                 put(o)
             }
         })
+        root.put("marks", JSONArray().apply {
+            _marks.value.forEach { m ->
+                put(
+                    JSONObject().put("id", m.id).put("book", m.bookId).put("ch", m.chapterIndex)
+                        .put("pos", m.positionMs).put("title", m.title).put("time", m.time).put("auto", m.auto)
+                )
+            }
+        })
+        root.put("hidden", JSONArray().apply { _hidden.value.forEach { put(it) } })
+        root.put("skipSilence", _skipSilence.value)
+        root.put("boostDb", _boostDb.value.toDouble())
         return root.toString()
     }
 
@@ -388,6 +492,23 @@ object Library {
                     speed = o.optDouble("speed", 1.0).toFloat(),
                 )
             }
+            val ma = root.optJSONArray("marks") ?: JSONArray()
+            _marks.value = (0 until ma.length()).map { i ->
+                val o = ma.getJSONObject(i)
+                Bookmark(
+                    id = o.getLong("id"),
+                    bookId = o.getString("book"),
+                    chapterIndex = o.optInt("ch", 0),
+                    positionMs = o.optLong("pos", 0),
+                    title = o.optString("title", ""),
+                    time = o.optLong("time", 0),
+                    auto = o.optBoolean("auto", false),
+                )
+            }
+            val ha = root.optJSONArray("hidden") ?: JSONArray()
+            _hidden.value = (0 until ha.length()).map { ha.getString(it) }.toSet()
+            _skipSilence.value = root.optBoolean("skipSilence", false)
+            _boostDb.value = root.optDouble("boostDb", 0.0).toFloat()
         } catch (e: Exception) {
             Log.e(TAG, "Lecture de la bibliothèque impossible", e)
         }

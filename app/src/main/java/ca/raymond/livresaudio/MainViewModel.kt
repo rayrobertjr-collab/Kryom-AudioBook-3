@@ -33,6 +33,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val folders = Library.folders
     val scanning = Library.scanning
     val sleepRemaining = SleepTimer.remainingMs
+    val marks = Library.marks
+    val hidden = Library.hidden
+    val skipSilence = Library.skipSilence
+    val boostDb = Library.boostDb
+
+    // ---- Menu d'actions d'un livre (partagé bibliothèque / lecteur) ----
+    private val _actionsFor = MutableStateFlow<String?>(null)
+    val actionsFor: StateFlow<String?> = _actionsFor.asStateFlow()
+    private val _editFor = MutableStateFlow<String?>(null)
+    val editFor: StateFlow<String?> = _editFor.asStateFlow()
+    private val _coverSearchFor = MutableStateFlow<String?>(null)
+    val coverSearchFor: StateFlow<String?> = _coverSearchFor.asStateFlow()
+    private val _deleteFor = MutableStateFlow<String?>(null)
+    val deleteFor: StateFlow<String?> = _deleteFor.asStateFlow()
+
+    private val _coverResults = MutableStateFlow<List<String>>(emptyList())
+    val coverResults: StateFlow<List<String>> = _coverResults.asStateFlow()
+    private val _coverLoading = MutableStateFlow(false)
+    val coverLoading: StateFlow<Boolean> = _coverLoading.asStateFlow()
 
     private val _state = MutableStateFlow(PlayState())
     val state: StateFlow<PlayState> = _state.asStateFlow()
@@ -139,12 +158,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
+    /** Mémorise la position actuelle dans l'historique avant un saut. */
+    private fun rememberHere(reason: String) {
+        val c = controller ?: return
+        val id = loadedBookId() ?: return
+        val book = Library.find(id) ?: return
+        val name = book.chapters.getOrNull(c.currentMediaItemIndex)?.name ?: ""
+        Library.addMark(id, c.currentMediaItemIndex, c.currentPosition, "$reason · $name", auto = true)
+    }
+
     fun seekTo(ms: Long) {
+        if (kotlin.math.abs(ms - (controller?.currentPosition ?: ms)) > 30_000) rememberHere("Avant un saut")
         ensureLoaded()?.seekTo(ms)
         refresh()
     }
 
     fun goToChapter(index: Int) {
+        rememberHere("Avant changement de chapitre")
         ensureLoaded()?.seekTo(index, 0)
         refresh()
     }
@@ -168,6 +198,81 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setSleep(minutes: Int) = SleepTimer.start(minutes)
+
+    fun toggleSkipSilence() = Library.setSkipSilence(!Library.skipSilence.value)
+    fun setBoost(db: Float) = Library.setBoost(db)
+
+    // ---- Marque-pages ----
+    fun addBookmark(title: String) {
+        val c = ensureLoaded() ?: return
+        val id = loadedBookId() ?: return
+        Library.addMark(id, c.currentMediaItemIndex, c.currentPosition, title, auto = false)
+    }
+
+    fun deleteMark(id: Long) = Library.deleteMark(id)
+
+    fun jumpTo(mark: Bookmark) {
+        if (loadedBookId() != mark.bookId) load(mark.bookId, autoplay = false)
+        else rememberHere("Avant un saut")
+        controller?.seekTo(mark.chapterIndex, mark.positionMs)
+        refresh()
+    }
+
+    // ---- Actions sur un livre ----
+    fun openActions(id: String) { _actionsFor.value = id }
+    fun closeActions() { _actionsFor.value = null }
+    fun startEdit(id: String) { _actionsFor.value = null; _editFor.value = id }
+    fun closeEdit() { _editFor.value = null }
+    fun saveInfo(id: String, title: String, author: String) {
+        Library.editInfo(id, title.trim(), author.trim())
+        _editFor.value = null
+    }
+
+    fun askDelete(id: String) { _actionsFor.value = null; _deleteFor.value = id }
+    fun closeDelete() { _deleteFor.value = null }
+    fun deleteBook(id: String) {
+        if (loadedBookId() == id) {
+            controller?.stop()
+            controller?.clearMediaItems()
+        }
+        Library.hideBook(id)
+        _deleteFor.value = null
+    }
+
+    fun unhideAll() = Library.unhideAll()
+
+    fun setCoverFromFile(id: String, uri: Uri) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) { Library.setCoverFromUri(id, uri) }
+    }
+
+    fun startCoverSearch(id: String) {
+        _actionsFor.value = null
+        _coverSearchFor.value = id
+        val b = Library.find(id) ?: return
+        searchCovers(listOfNotNull(b.title, b.author).joinToString(" "))
+    }
+
+    fun searchCovers(query: String) {
+        if (query.isBlank()) return
+        _coverLoading.value = true
+        _coverResults.value = emptyList()
+        viewModelScope.launch {
+            _coverResults.value = CoverSearch.search(query)
+            _coverLoading.value = false
+        }
+    }
+
+    fun pickCover(id: String, url: String) {
+        _coverLoading.value = true
+        viewModelScope.launch {
+            val bytes = CoverSearch.download(url)
+            if (bytes != null) Library.setCoverBytes(id, bytes)
+            _coverLoading.value = false
+            _coverSearchFor.value = null
+        }
+    }
+
+    fun closeCoverSearch() { _coverSearchFor.value = null }
 
     fun resetBook(id: String) {
         if (loadedBookId() == id) controller?.seekTo(0, 0)

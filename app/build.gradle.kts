@@ -12,13 +12,27 @@ android {
         applicationId = "ca.raymond.livresaudio"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
+    }
+
+    // Clé de signature fixe : chaque nouvelle version s'installe par-dessus l'ancienne
+    signingConfigs {
+        create("fixe") {
+            storeFile = file("livresaudio.jks")
+            storePassword = "livresaudio"
+            keyAlias = "livresaudio"
+            keyPassword = "livresaudio"
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("fixe")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("fixe")
         }
     }
     compileOptions {
@@ -46,6 +60,7 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.5.1")
     implementation("androidx.media3:media3-session:1.5.1")
     implementation("androidx.documentfile:documentfile:1.0.1")
+    implementation("androidx.palette:palette-ktx:1.0.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
